@@ -145,6 +145,8 @@ export class ClaimsService implements OnModuleInit {
     maxAmount?: number;
   }): Promise<any[]> {
     let mongoClaims: any[] = [];
+    let mongoFetchSuccess = false;
+
     if (this.isMongoConnected()) {
       try {
         const filter: any = {};
@@ -178,47 +180,48 @@ export class ClaimsService implements OnModuleInit {
           ];
         }
         mongoClaims = await this.claimModel.find(filter).sort({ submissionDate: -1 }).exec();
+        mongoFetchSuccess = true;
         this.logger.log(`Fetched ${mongoClaims.length} claims from MongoDB.`);
       } catch (err) {
         this.logger.warn(`MongoDB find failed, using memory fallback: ${err.message}`);
       }
     }
 
-    const mongoIds = new Set(mongoClaims.map(c => (c._id ? c._id.toString() : c.id)));
-    const extraMemoryClaims = this.inMemoryClaims.filter(
-      c => !mongoIds.has(c._id ? c._id.toString() : c.id)
-    );
-    let filtered = [...mongoClaims, ...extraMemoryClaims].map(c => {
+    const sourceClaims = mongoFetchSuccess ? mongoClaims : this.inMemoryClaims;
+
+    let filtered = sourceClaims.map(c => {
       const id = c._id ? c._id.toString() : c.id;
       const docUrl = c.documentUrl || (c.documentData ? `/api/claims/${id}/document` : '');
       return typeof c.toObject === 'function' ? { ...c.toObject(), documentUrl: docUrl } : { ...c, documentUrl: docUrl };
     });
 
-    if (query.status && query.status !== 'ALL') {
-      filtered = filtered.filter(c => c.status === query.status);
-    }
+    if (!mongoFetchSuccess) {
+      if (query.status && query.status !== 'ALL') {
+        filtered = filtered.filter(c => c.status === query.status);
+      }
 
-    if (query.email) {
-      filtered = filtered.filter(c => c.patientEmail?.toLowerCase() === query.email.toLowerCase());
-    }
+      if (query.email) {
+        filtered = filtered.filter(c => c.patientEmail?.toLowerCase() === query.email.toLowerCase());
+      }
 
-    if (query.minAmount !== undefined && !isNaN(Number(query.minAmount))) {
-      filtered = filtered.filter(c => c.claimAmount >= Number(query.minAmount));
-    }
+      if (query.minAmount !== undefined && !isNaN(Number(query.minAmount))) {
+        filtered = filtered.filter(c => c.claimAmount >= Number(query.minAmount));
+      }
 
-    if (query.maxAmount !== undefined && !isNaN(Number(query.maxAmount))) {
-      filtered = filtered.filter(c => c.claimAmount <= Number(query.maxAmount));
-    }
+      if (query.maxAmount !== undefined && !isNaN(Number(query.maxAmount))) {
+        filtered = filtered.filter(c => c.claimAmount <= Number(query.maxAmount));
+      }
 
-    if (query.search) {
-      const q = query.search.toLowerCase();
-      filtered = filtered.filter(
-        c =>
-          c.patientName?.toLowerCase().includes(q) ||
-          c.patientEmail?.toLowerCase().includes(q) ||
-          c.description?.toLowerCase().includes(q) ||
-          (c._id && c._id.toString().toLowerCase().includes(q))
-      );
+      if (query.search) {
+        const q = query.search.toLowerCase();
+        filtered = filtered.filter(
+          c =>
+            c.patientName?.toLowerCase().includes(q) ||
+            c.patientEmail?.toLowerCase().includes(q) ||
+            c.description?.toLowerCase().includes(q) ||
+            (c._id && c._id.toString().toLowerCase().includes(q))
+        );
+      }
     }
 
     return filtered.sort((a, b) => new Date(b.submissionDate).getTime() - new Date(a.submissionDate).getTime());
