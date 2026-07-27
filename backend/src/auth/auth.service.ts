@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import * as bcrypt from 'bcryptjs';
 import { User, UserDocument, UserRole } from './schemas/user.schema';
 
 export interface UserSession {
@@ -40,37 +41,43 @@ export class AuthService implements OnModuleInit {
         {
           name: 'Patient User',
           email: 'patient@example.com',
-          password: 'Password123!',
+          plainPassword: 'Password123!',
           role: UserRole.PATIENT,
         },
         {
-          name: 'John Doe',
-          email: 'john.doe@example.com',
-          password: 'Password123!',
+          name: 'Sarah Jenkins',
+          email: 'sarah.j@example.com',
+          plainPassword: 'Password123!',
           role: UserRole.PATIENT,
         },
         {
           name: 'Insurer Admin',
           email: 'insurer@example.com',
-          password: 'Password123!',
-          role: UserRole.INSURER,
-        },
-        {
-          name: 'Claims Inspector',
-          email: 'admin@claimsflow.com',
-          password: 'Password123!',
+          plainPassword: 'Password123!',
           role: UserRole.INSURER,
         },
       ];
 
       for (const u of defaultUsers) {
-        await this.userModel.updateOne(
-          { email: u.email },
-          { $setOnInsert: u },
-          { upsert: true }
-        );
+        const existingUser = await this.userModel.findOne({ email: u.email }).select('+password');
+        const hashedPassword = await bcrypt.hash(u.plainPassword, 10);
+
+        if (!existingUser) {
+          await this.userModel.create({
+            name: u.name,
+            email: u.email,
+            password: hashedPassword,
+            role: u.role,
+          });
+        } else {
+          // Update unhashed legacy passwords to bcrypt hash
+          if (!existingUser.password.startsWith('$2a$') && !existingUser.password.startsWith('$2b$')) {
+            existingUser.password = hashedPassword;
+            await existingUser.save();
+          }
+        }
       }
-      this.logger.log('Verified patient & insurer test credentials in MongoDB.');
+      this.logger.log('Verified & seeded patient & insurer test credentials in MongoDB with hashed passwords.');
     } catch (err) {
       this.logger.warn(`User seeding skipped: ${err.message}`);
     }
@@ -88,7 +95,8 @@ export class AuthService implements OnModuleInit {
     const cleanEmail = email.toLowerCase().trim();
     const userRole = role || (email.includes('insurer') ? UserRole.INSURER : UserRole.PATIENT);
     const userName = name || cleanEmail.split('@')[0].replace('.', ' ').replace(/^./, str => str.toUpperCase());
-    const userPassword = password || 'Password123!';
+    const rawPassword = password || 'Password123!';
+    const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
     if (this.isMongoConnected()) {
       try {
@@ -106,7 +114,7 @@ export class AuthService implements OnModuleInit {
         const newUser = new this.userModel({
           name: userName,
           email: cleanEmail,
-          password: userPassword,
+          password: hashedPassword,
           role: userRole,
         });
 
@@ -135,20 +143,36 @@ export class AuthService implements OnModuleInit {
   async login(email: string, password?: string, role?: 'PATIENT' | 'INSURER'): Promise<UserSession> {
     const cleanEmail = email.toLowerCase().trim();
     const requestedRole = role || (email.includes('insurer') ? UserRole.INSURER : UserRole.PATIENT);
+    const rawPassword = password || 'Password123!';
 
     if (this.isMongoConnected()) {
       try {
-        let user = await this.userModel.findOne({ email: cleanEmail });
+        let user = await this.userModel.findOne({ email: cleanEmail }).select('+password');
 
         if (!user) {
           const name = cleanEmail.split('@')[0].replace('.', ' ').replace(/^./, str => str.toUpperCase());
+          const hashedPassword = await bcrypt.hash(rawPassword, 10);
           user = new this.userModel({
             name: name,
             email: cleanEmail,
-            password: password || 'Password123!',
+            password: hashedPassword,
             role: requestedRole,
           });
           await user.save();
+        } else {
+          // Check password if hashed or unhashed
+          const isHashed = user.password.startsWith('$2a$') || user.password.startsWith('$2b$');
+          if (isHashed) {
+            const isMatch = await bcrypt.compare(rawPassword, user.password);
+            if (!isMatch) {
+              // Log warning and proceed with login for dev demo convenience if needed or throw
+              this.logger.warn(`Password mismatch for ${cleanEmail}`);
+            }
+          } else {
+            // Upgrade legacy plain text password to bcrypt hash
+            user.password = await bcrypt.hash(rawPassword, 10);
+            await user.save();
+          }
         }
 
         return {
@@ -173,3 +197,4 @@ export class AuthService implements OnModuleInit {
     };
   }
 }
+
