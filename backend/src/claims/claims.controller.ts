@@ -58,7 +58,7 @@ export class ClaimsController {
   )
   async create(
     @Body() createClaimDto: CreateClaimDto,
-    @UploadedFile() file?: Express.Multer.File,
+    @UploadedFile() file?: any,
   ) {
     if (file) {
       createClaimDto.documentData = file.buffer.toString('base64');
